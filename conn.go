@@ -1106,7 +1106,8 @@ func (cn *conn) recvMessage(r *readBuf) (proto.ResponseCode, error) {
 
 	// Read the type and length of the message that follows.
 	t := proto.ResponseCode(x[0])
-	n := int(binary.BigEndian.Uint32(x[1:])) - 4
+	msgLen := int(int32(binary.BigEndian.Uint32(x[1:])))
+	n := msgLen - 4
 
 	// When PostgreSQL cannot start a backend (e.g., an external process limit),
 	// it sends plain text like "Ecould not fork new process [..]", which
@@ -1119,6 +1120,10 @@ func (cn *conn) recvMessage(r *readBuf) (proto.ResponseCode, error) {
 	if cn.txnStatus == 0 && t == proto.ErrorResponse && (n < 4 || n > proto.MaxMsgLen) {
 		msg, _ := cn.buf.ReadString('\x00')
 		return 0, fmt.Errorf("pq: server error: %s%s", string(x[1:]), strings.TrimSuffix(msg, "\x00"))
+	}
+	if n < 0 || msgLen > 0x3fffffff {
+		cn.err.set(driver.ErrBadConn)
+		return 0, fmt.Errorf("pq: lost synchronization with server: got message type %q, length %d", t, msgLen)
 	}
 	if !proto.ValidLongMessageType(t) && n > proto.MaxMsgLen {
 		return 0, fmt.Errorf("pq: lost synchronization with server: got message type %q, length %d", t, n)

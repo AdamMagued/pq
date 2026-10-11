@@ -124,6 +124,10 @@ func (rs *rows) Next(dest []driver.Value) (resErr error) {
 					dest[i] = nil
 					continue
 				}
+				if l < 0 || l > len(rs.rb) {
+					rs.cn.err.set(driver.ErrBadConn)
+					return fmt.Errorf("pq: invalid column length %d in DataRow", l)
+				}
 				dest[i], err = decode(&rs.cn.parameterStatus, rs.rb.next(l), rs.colTyps[i].OID, rs.colFmts[i])
 				if err != nil {
 					return rs.cn.handleError(err)

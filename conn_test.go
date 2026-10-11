@@ -1861,6 +1861,66 @@ func TestLargeMessage(t *testing.T) {
 	}
 }
 
+func TestMalformedFrameLength(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     []byte
+		wantErr string
+	}{
+		{
+			name:    "zero length frame",
+			raw:     []byte{byte(proto.DataRow), 0, 0, 0, 0},
+			wantErr: `pq: lost synchronization with server: got message type "(D) DataRow", length 0`,
+		},
+		{
+			name:    "length smaller than header",
+			raw:     []byte{byte(proto.DataRow), 0, 0, 0, 2},
+			wantErr: `pq: lost synchronization with server: got message type "(D) DataRow", length 2`,
+		},
+		{
+			name:    "negative length frame",
+			raw:     []byte{byte(proto.DataRow), 0xff, 0xff, 0xff, 0xff},
+			wantErr: `pq: lost synchronization with server: got message type "(D) DataRow", length -1`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := pqtest.NewFake(t, func(f pqtest.Fake, cn net.Conn) {
+				f.Startup(cn, nil)
+				for {
+					code, q, ok := f.ReadMsg(cn)
+					if !ok {
+						return
+					}
+					switch code {
+					case proto.Query:
+						switch q := string(q[:bytes.IndexByte(q, 0)]); {
+						case q == ";":
+							f.WriteMsg(cn, proto.EmptyQueryResponse, "")
+							f.WriteMsg(cn, proto.ReadyForQuery, "I")
+						default:
+							_, _ = cn.Write(tt.raw)
+						}
+					case proto.Terminate:
+						cn.Close()
+						return
+					}
+				}
+			})
+			defer f.Close()
+
+			db := pqtest.MustDB(t, f.DSN())
+			var have string
+			err := db.QueryRow(`select 1`).Scan(&have)
+			if !pqtest.ErrorContains(err, tt.wantErr) {
+				t.Fatalf("wrong error:\nhave: %s\nwant: %s", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 // reading from circularConn yields content[:prefixLen] once, followed by
 // content[prefixLen:] over and over again. It never returns EOF.
 type circularConn struct {
